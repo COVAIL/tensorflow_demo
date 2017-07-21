@@ -1,0 +1,384 @@
+---
+title: "Columbus GDG"
+author: "Slava Nikitin"
+date: "July 19, 2017"
+output:
+  html_document:
+    self_contained: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+## Problem Domain
+
+Analyzing data and building intelligent systems 
+
+
+<!-- ![](data-science.png) -->
+
+[Data science diagram](http://r4ds.had.co.nz/diagrams/data-science-explore.png)
+
+## Modeling primitives (MADLIM)
+
+1. Model
+4. Algorithm
+5. Data
+2. Loss
+3. Inference
+6. Metric
+
+<!-- go![](madlim.png) -->
+
+[Design space diagram](https://qph.ec.quoracdn.net/main-qimg-d8998ad42e28eb27a4035ef3601c0f68)
+
+
+## Software frameworks
+
+1. Caffe
+2. CNTK
+3. MXNET
+4. Tensorflow
+5. Torch
+
+## Tensorflow overview
+
+1. Numerical + programming library
+2. Parallelized/distributed
+3. Several execution modes
+4. Multi-platform
+5. Several interface languages
+6. Levels of APIs
+7. Visualization
+8. Model serving
+9. Apache 2.0
+
+<!-- ![](tf_arch.png) -->
+
+[Architecture diagram](https://www.tensorflow.org/images/layers.png)
+
+## Tensorflow programming
+
+1. Tensors
+2. Operators
+3. Programming primitives
+4. Data
+
+<!-- ![](tf.jpg) -->
+
+[Data flow diagram](http://www.kdnuggets.com/wp-content/uploads/tensors_flowing.jpg)
+
+## Neural nets for predictive modeling
+
+<!-- ![](nn.jpg) -->
+
+[Neural network structure](https://www.analyticsvidhya.com/wp-content/uploads/2016/03/2.-ann-structure.jpg)
+
+<!-- ![](geometry.gif) -->
+
+[Neural network as topological transformation](https://www.generativeart.com/on/cic/papersGA2003/b22_file/image004.gif)
+
+
+```{r message=FALSE, warning=FALSE}
+reticulate::use_virtualenv("~/Documents/quickInsights/tensorflow/")
+require(tensorflow)
+require(keras)
+```
+
+## Low-level tensoflow
+
+Synthesize data
+
+```{r}
+set.seed(54934)
+n = 100
+intercept = .3
+slope = 2
+predictors_train = runif(n)
+response_train = predictors_train * slope + intercept + rnorm(100)
+
+predictors_test = runif(n)
+response_test = predictors_test * slope + intercept + rnorm(100)
+
+plot(
+  predictors_train, response_train, 
+  xlab = "Predictor", ylab = "Response",
+  main = "Sample from a Gaussian Linear Model",
+  pch = 19
+)
+
+```
+
+
+Prepare inputs/outputs and parameters by creating tensors.
+```{r}
+x = tf$placeholder(tf$float32, list(NULL, 1L))
+y_obs = tf$placeholder(tf$float32, list(NULL, 1L))
+
+W = tf$Variable(tf$random_uniform(shape(1L), -1.0, 1.0))
+b = tf$Variable(tf$zeros(shape(1L)))
+
+```
+
+Define a flow of tensors through a sequence of operators that represent a linear systematic component
+
+```{r}
+y = tf$multiply(W, x) %>% 
+  tf$add(b)
+```
+
+then use a gaussian distribution to define the loss:
+
+```{r}
+loss = tf$subtract(y, y_obs) %>% 
+  tf$pow(2) %>% 
+  tf$reduce_mean()
+```
+
+Pick an algorithm, implicitly following maximum likelihood inference procedure:
+
+```{r}
+# stochastic optimizer
+optimizer = tf$train$GradientDescentOptimizer(0.5)
+train = optimizer$minimize(loss)
+```
+
+Set up the model and fit it to data
+
+```{r}
+# Launch the graph and initialize the variables.
+sess = tf$Session()
+sess$run(tf$global_variables_initializer())
+
+# Fit the model
+for (step in 1:200) 
+  sess$run(
+    train,
+    dict(x = as.matrix(predictors_train), y_obs = as.matrix(response_train))
+  )
+
+cat("Parameter estimates: ", "W = ", sess$run(W), ", ", "b = ", sess$run(b), sep = "")
+cat("Predictive accuracy:", 
+    sqrt(sess$run(loss, dict(x = as.matrix(predictors_test),
+                             y_obs = as.matrix(response_test)))))
+```
+
+Some diagnostics for out of sample data:
+```{r fig.height=8}
+y_pred = sess$run(y, dict(x = as.matrix(predictors_test)))
+par(mfrow = c(2, 1))
+plot(y_pred, response_test, xlab = "Predicted Values", ylab = "Observed Values",
+     main = expression("Diagnostics of the Linear Model"), pch = 19)
+plot(predictors_test, response_test, pch = 19, xlab = "Predictor Value",
+     ylab = "Response Value", main = "Test Observations and a Linear Model")
+abline(sess$run(b), sess$run(W), col = "blue", lwd = 2)
+
+```
+
+
+## Mid-level with Keras
+### Continuous output
+Get data:
+
+```{r}
+boston = dataset_boston_housing()
+str(boston)
+
+predictors_train = boston$train$x
+response_train = boston$train$y
+predictors_test = boston$test$x
+response_test = boston$test$y
+
+plot_data = cbind(response_train, predictors_train)
+colnames(plot_data) = c("response", paste(rep("predictor", 13), 1:13))
+pairs(plot_data[, 1:5])
+
+```
+
+Define the systematic component:
+```{r}
+model = keras_model_sequential()
+
+model %>% 
+  layer_dense(units = 13, activation = 'relu', input_shape = 13) %>% 
+  layer_dense(units = 1, activation = 'linear')
+
+summary(model)
+```
+
+
+Define the random component, inference algorithm, evaluation measure
+```{r}
+compile(
+  model, 
+  loss = "mean_absolute_error",
+  optimizer = "adam",
+  metrics = "mean_absolute_error"
+)
+```
+
+Estimate parameters
+```{r}
+history = fit(
+  model, 
+  predictors_train, response_train,
+  validation_data = list(predictors_test, response_test),
+  batch_size = 64, epochs = 100
+)
+
+plot(history)
+
+```
+
+
+Prediction diagnostic
+```{r fig.height=8}
+# # Evaluate
+# evaluate(model, predictors_test, response_test)
+
+# 
+problems = as.double(predict(model, predictors_test)) - response_test > 10 |
+  as.double(predict(model, predictors_test)) - response_test < -10
+
+par(mfrow = c(2, 1))
+plot(
+  as.double(predict(model, predictors_test)), response_test,
+  pch = 19, xlim = c(0, 50), ylim = c(0, 50),
+  xlab = "Predicted", ylab = "Observed",
+  main = "Correlation of Observed and Predicted Values",
+  cex.main = .6
+)
+abline(a = 0, b = 1, lty = 2, lwd = 2, col = "grey")
+points(as.double(predict(model, predictors_test))[problems],
+       response_test[problems], col = "red", pch = 19)
+plot(
+  response_test - as.double(predict(model, predictors_test)),
+  pch = 19,
+  xlab = "Index of a Data Point", ylab = "Residual",
+  main = "Residuals Diagnostic",
+  cex.main = .6
+)
+abline(h = 0, lty = 2, lwd = 2, col = "grey")
+points((1:length(response_test))[problems],
+       (response_test - as.double(predict(model, predictors_test)))[problems],
+       col = "red", pch = 19)
+```
+
+### Categorical output
+
+Data prep
+```{r}
+
+max_words = 1000
+
+cat('Loading data...\n')
+reuters = dataset_reuters(num_words = max_words, test_split = 0.2)
+
+predictors_train = reuters$train$x
+response_train = reuters$train$y
+predictors_test = reuters$test$x
+response_test = reuters$test$y
+
+cat(length(predictors_train), 'train sequences\n')
+cat(length(predictors_test), 'test sequences\n')
+
+num_classes = max(response_train) + 1
+cat(num_classes, '\n')
+
+cat('Vectorizing sequence data...\n')
+
+tokenizer = text_tokenizer(num_words = max_words)
+predictors_train = sequences_to_matrix(tokenizer, predictors_train, mode = 'binary')
+predictors_test = sequences_to_matrix(tokenizer, predictors_test, mode = 'binary')
+
+cat('predictors_train shape:', dim(predictors_train), '\n')
+cat('predictors_test shape:', dim(predictors_test), '\n')
+
+cat('Convert class vector to binary class matrix',
+    '(for use with categorical_crossentropy)\n')
+response_train = to_categorical(response_train, num_classes)
+response_test = to_categorical(response_test, num_classes)
+cat('response_train shape:', dim(response_train), '\n')
+cat('response_test shape:', dim(response_test), '\n')
+```
+
+
+Define the systematic component
+```{r}
+cat('Building model...\n')
+model = keras_model_sequential()
+model %>%
+  layer_dense(units = 512, activation = "relu", input_shape = max_words) %>% 
+  layer_dropout(rate = 0.5) %>% 
+  layer_dense(units = num_classes, activation = "softmax")
+
+summary(model)
+
+```
+
+Define the random component, inference algorithm, evaluation measure
+```{r}
+compile(
+  model,
+  loss = 'categorical_crossentropy',
+  optimizer = 'adam',
+  metrics = 'accuracy'
+)
+
+```
+
+Fit model to data
+```{r}
+batch_size = 64
+epochs = 10
+
+history = fit(
+  model,
+  predictors_train, response_train,
+  batch_size = batch_size,
+  epochs = epochs,
+  verbose = 1,
+  validation_data = list(predictors_test, response_test)
+)
+
+plot(history)
+```
+
+
+scalar metrics
+```{r}
+metrics = evaluate(
+  model,
+  predictors_test, response_test,
+  batch_size = batch_size,
+  verbose = 1
+)
+
+cat('Test loss:', metrics[[1]], '\n')
+cat('Test accuracy', metrics[[2]], '\n')
+```
+
+Confusion matrix for more detail
+```{r}
+table("predicted" = predict_classes(model, predictors_test),
+      "observed" = reuters$test$y)[1:9, 1:10]
+```
+
+
+## Additional resources
+
+https://www.tensorflow.org/
+
+[2017 TensorFlow Dev Summit videos](https://www.youtube.com/playlist?list=PLOU2XLYxmsIKGc_NBoIhTn2Qhraji53cv)
+
+[2017 Google I/O videos](https://www.youtube.com/playlist?list=PLOU2XLYxmsIKC8eODk_RNCWv3fBcLvMMy)
+
+
+
+
+
+
